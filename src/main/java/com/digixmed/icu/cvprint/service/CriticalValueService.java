@@ -82,8 +82,8 @@ public class CriticalValueService {
     @Value("${critical-value.default-reporter:重症系统}")
     private String defaultReporter;
 
-    /** 匹配护理记录时，允许的时间偏差（小时） */
-    @Value("${critical-value.nurse-match-hours:72}")
+    /** 匹配护理记录时，允许的时间偏差（小时）；危急值要求 10 分钟内报告，默认 24h 已留足余量 */
+    @Value("${critical-value.nurse-match-hours:24}")
     private int nurseMatchHours;
 
     /** 是否只展示已处理（status=true）的危急值 */
@@ -275,9 +275,11 @@ public class CriticalValueService {
         and.add(Criteria.where("pid").in(patientIds));
         // 只看含"危急值"的护理记录，减少无效数据
         and.add(Criteria.where("desc").regex("危急值"));
+        // 下界：护理记录最早只可能比危急值早 1 小时（与 matchNurse 的 -HOUR 对齐）
         if (start != null) {
-            and.add(Criteria.where("time").gte(new Date(start.getTime() - nurseMatchHours * HOUR)));
+            and.add(Criteria.where("time").gte(new Date(start.getTime() - HOUR)));
         }
+        // 上界：护理记录最晚在查询窗口结束后 nurseMatchHours 小时内
         if (end != null) {
             and.add(Criteria.where("time").lte(new Date(end.getTime() + nurseMatchHours * HOUR)));
         }
@@ -566,6 +568,9 @@ public class CriticalValueService {
     public void resetCell(String sourceId, String field) {
         if (!StringUtils.hasText(sourceId) || !EDITABLE_FIELDS.contains(field)) {
             throw new IllegalArgumentException("参数不合法");
+        }
+        if (!ObjectId.isValid(sourceId)) {
+            throw new IllegalArgumentException("sourceId 格式不合法：" + sourceId);
         }
         Update update = new Update()
                 .pull("editedFields", field)

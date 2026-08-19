@@ -104,6 +104,10 @@
 <div id="sheets"></div>
 
 <script>
+/* NodeList.forEach polyfill for old WebView / IE */
+if (window.NodeList && !NodeList.prototype.forEach) {
+  NodeList.prototype.forEach = Array.prototype.forEach;
+}
 /* =======================================================================
    1. postMessage 握手（对接文档 V2）
    iframe -> 宿主: { type: 'SmartCareReady' }
@@ -114,8 +118,7 @@ var API_BASE = '';               // 与后端同源部署时留空
 
 // pid 对应 criticalValue.pid（即 patient.hisPid）；mrn 才是表格里的住院号
 var ctx = { account: '', token: '', patient: {}, pid: '', mrn: '', bed: '', dept: '', deptCode: '', name: '' };
-var ROWS_PER_PAGE = 13;          // A4 横向、11mm 行高实测值，字号或行高改了要同步调
-var MIN_ROWS = 11;               // 空表也铺满纸张
+var ROWS_PER_PAGE = 12;          // A4 横向实测值（余量约 15mm），调行高/字号后需同步改
 var TITLE = '眉山市人民医院危急值报告记录登记';
 var FIELDS = ['checkDate','patientName','deptText','bedText','inpatientNo','lisItem','value',
               'repeatResult','reporter','callTime','callName','reportDoctor','handled'];
@@ -212,10 +215,9 @@ function renderRows(rows){
   var host = document.getElementById('sheets');
   host.innerHTML = '';
 
-  // 不足一页时补空白行铺满
+  // 不足一页时补空白行铺满，至少保证一页
   var data = rows.slice();
-  var padTo = Math.max(data.length, MIN_ROWS);
-  padTo = Math.ceil(padTo / ROWS_PER_PAGE) * ROWS_PER_PAGE;
+  var padTo = Math.max(Math.ceil(data.length / ROWS_PER_PAGE), 1) * ROWS_PER_PAGE;
   while (data.length < padTo) data.push(null);
 
   var pageCount = Math.max(1, Math.ceil(data.length / ROWS_PER_PAGE));
@@ -264,6 +266,7 @@ function buildRow(row){
     td.contentEditable = 'true';
     td.dataset.field = f;
     td.textContent = row ? (row[f] || '') : '';
+    td.dataset.last = td.textContent;   // 初始化基线，避免无改动误触发保存
     if (f === 'handled' || f === 'bedText') td.className = 'center';
     if (f === 'checkDate' || f === 'callTime') td.className = 'center nowrap';
     td.addEventListener('blur', onCellBlur);
@@ -313,6 +316,7 @@ function onCellBlur(ev){
 document.getElementById('btnQuery').addEventListener('click', loadData);
 document.getElementById('btnPrint').addEventListener('click', function(){
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  setStatus('提示：打印时边距选"无"、关闭页眉页脚', 'ok');
   setTimeout(function(){ window.print(); }, 120);
 });
 

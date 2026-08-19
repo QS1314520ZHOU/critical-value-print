@@ -82,8 +82,12 @@ public class CriticalValueService {
     @Value("${critical-value.default-reporter:重症系统}")
     private String defaultReporter;
 
-    /** 匹配护理记录时，允许的时间偏差（小时）；危急值要求 10 分钟内报告，默认 24h 已留足余量 */
-    @Value("${critical-value.nurse-match-hours:24}")
+    /** DB 查询护理记录时，查询窗口 end 往后扩展的小时数（保证跨窗口边界的记录不漏捞） */
+    @Value("${critical-value.nurse-fetch-hours:48}")
+    private int nurseFetchHours;
+
+    /** 单条护理记录匹配危急值时，允许晚于 publishTime 的最大小时数（超过则排除） */
+    @Value("${critical-value.nurse-match-hours:6}")
     private int nurseMatchHours;
 
     /** 是否只展示已处理（status=true）的危急值 */
@@ -279,9 +283,9 @@ public class CriticalValueService {
         if (start != null) {
             and.add(Criteria.where("time").gte(new Date(start.getTime() - HOUR)));
         }
-        // 上界：护理记录最晚在查询窗口结束后 nurseMatchHours 小时内
+        // 上界：护理记录最晚在查询窗口结束后 nurseFetchHours 小时内
         if (end != null) {
-            and.add(Criteria.where("time").lte(new Date(end.getTime() + nurseMatchHours * HOUR)));
+            and.add(Criteria.where("time").lte(new Date(end.getTime() + nurseFetchHours * HOUR)));
         }
         Query q = new Query(new Criteria().andOperator(and.toArray(new Criteria[0])));
         q.with(Sort.by(Sort.Direction.ASC, "time"));
@@ -400,7 +404,7 @@ public class CriticalValueService {
      *   desc 包含"报告医生"                +1
      *   时间差 2 小时内 +3，24 小时内 +2，其余 +1
      *
-     * 时间窗：护理记录必须在危急值发布后 [−1h, +nurseMatchHours h] 内。
+     * 时间窗：护理记录必须在危急值发布后 [−1h, +nurseMatchHours h] 内（独立于 nurseFetchHours，可分别调优）。
      * 得分 >= 6 才视为命中，宁缺毋滥；同分取时间最接近的一条。
      */
     private NurseRecords matchNurse(List<NurseRecords> records, CriticalValue cv, Patient p) {

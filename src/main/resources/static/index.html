@@ -98,16 +98,14 @@
   <button class="btn" id="btnAddRow">新增空白行</button>
   <div class="spacer"></div>
   <span class="status" id="status">就绪</span>
-  <button class="btn primary" id="btnPrint">打印</button>
+  <button class="btn primary" id="btnPrint" title="打印时请在对话框中将边距设为「无」并关闭页眉页脚">打印</button>
 </div>
 
 <div id="sheets"></div>
 
 <script>
-/* NodeList.forEach polyfill for old WebView / IE */
-if (window.NodeList && !NodeList.prototype.forEach) {
-  NodeList.prototype.forEach = Array.prototype.forEach;
-}
+/* 要求宿主 iframe 内核为 Chromium 63+ 或 Firefox 72+（依赖 fetch / Object.assign / NodeList.forEach）。
+   IE / CEF 老内核不支持，需宿主侧升级或自行引入 polyfill.js + promise-polyfill。 */
 /* =======================================================================
    1. postMessage 握手（对接文档 V2）
    iframe -> 宿主: { type: 'SmartCareReady' }
@@ -316,7 +314,6 @@ function onCellBlur(ev){
 document.getElementById('btnQuery').addEventListener('click', loadData);
 document.getElementById('btnPrint').addEventListener('click', function(){
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-  setStatus('提示：打印时边距选"无"、关闭页眉页脚', 'ok');
   setTimeout(function(){ window.print(); }, 120);
 });
 

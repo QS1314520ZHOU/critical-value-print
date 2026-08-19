@@ -1,6 +1,7 @@
 package com.digixmed.icu.cvprint.config;
 
 import com.digixmed.icu.cvprint.entity.CriticalValueReport;
+import com.digixmed.icu.cvprint.entity.NurseRecords;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -40,5 +41,11 @@ public class MongoIndexInitializer implements ApplicationRunner {
                 .ensureIndex(new Index().on("pid", Sort.Direction.ASC)
                         .on("publishTime", Sort.Direction.DESC).named("idx_pid_publishTime"));
         log.info("criticalValueReport 索引已就绪");
+
+        // nurseRecords 复合索引：按患者查 + 时间倒序，配合 desc regex 内存过滤
+        mongoTemplate.indexOps(NurseRecords.class)
+                .ensureIndex(new Index().on("pid", Sort.Direction.ASC)
+                        .on("time", Sort.Direction.DESC).named("idx_pid_time"));
+        log.info("nurseRecords 索引已就绪");
     }
 }

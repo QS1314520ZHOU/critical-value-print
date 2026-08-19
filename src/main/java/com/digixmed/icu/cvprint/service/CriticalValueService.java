@@ -6,6 +6,7 @@ import com.digixmed.icu.cvprint.entity.CriticalValue;
 import com.digixmed.icu.cvprint.entity.CriticalValueReport;
 import com.digixmed.icu.cvprint.entity.NurseRecords;
 import com.digixmed.icu.cvprint.entity.Patient;
+import org.bson.types.ObjectId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -39,7 +41,7 @@ import java.util.stream.Collectors;
  *
  * 数据链路：
  *   criticalValue.pid  ->  patient.hisPid  ->  patient._id / patient.mrn
- *   patient._id        ->  nurseRecords.pid（desc 模糊匹配危急值）-> nurseRecords.username
+ *   patient._id        ->  nurseRecords.pid（desc 模糊匹配危急值）-> nurseRecords.username / nurseRecords.time
  *
  * 字段跟随规则：
  *   未被人工编辑过的字段，每次查询都按最新源数据重新计算（源数据变，表格跟着变）；
@@ -57,6 +59,9 @@ public class CriticalValueService {
             "callTime", "callName", "reportDoctor", "handled"));
 
     private static final Pattern NUM_PATTERN = Pattern.compile("\\d+\\.\\d+|\\d{2,}");
+    /** 报告医生：desc 中形如「报告医生：张三。」 */
+    private static final Pattern DOCTOR_PATTERN =
+            Pattern.compile("报告医生\\s*[：:]\\s*([^，,。；;\\s]{1,10})");
     private static final long HOUR = 3600_000L;
 
     private final MongoTemplate mongoTemplate;
@@ -74,7 +79,7 @@ public class CriticalValueService {
     private String nurseRecordsCollection;
 
     /** 报告人默认值 */
-    @Value("${critical-value.default-reporter:\u91cd\u75c7\u7cfb\u7edf}")
+    @Value("${critical-value.default-reporter:重症系统}")
     private String defaultReporter;
 
     /** 匹配护理记录时，允许的时间偏差（小时） */
@@ -88,6 +93,10 @@ public class CriticalValueService {
     /** 科室编码 -> 科室名称映射，格式：4042:CCU,4041:ICU（不配则自动从 patient 表反查） */
     @Value("${critical-value.dept-code-map:}")
     private String deptCodeMapConfig;
+
+    /** 时区，默认东八区；配成空串则跟随服务器 JVM 时区 */
+    @Value("${critical-value.time-zone:Asia/Shanghai}")
+    private String timeZoneId;
 
     /** 科室编码换算结果缓存 */
     private final Map<String, String> deptCodeCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -231,7 +240,7 @@ public class CriticalValueService {
                 return p.getDept();
             }
         } catch (Exception e) {
-            log.warn("\u79d1\u5ba4\u7f16\u7801\u53cd\u67e5\u5931\u8d25 deptCode={}", code, e);
+            log.warn("科室编码反查失败 deptCode={}", code, e);
         }
 
         return fallback;
@@ -264,8 +273,8 @@ public class CriticalValueService {
         }
         List<Criteria> and = new ArrayList<>();
         and.add(Criteria.where("pid").in(patientIds));
-        // 只看含“危急值”的护理记录，减少无效数据
-        and.add(Criteria.where("desc").regex("\u5371\u6025\u503c"));
+        // 只看含"危急值"的护理记录，减少无效数据
+        and.add(Criteria.where("desc").regex("危急值"));
         if (start != null) {
             and.add(Criteria.where("time").gte(new Date(start.getTime() - nurseMatchHours * HOUR)));
         }
@@ -290,30 +299,36 @@ public class CriticalValueService {
     // 系统值计算 + 人工值覆盖
     // ==================================================================
 
-    /** 根��最新源数据计算一行的系统值 */
+    /** 根据最新源数据计算一行的系统值 */
     private Map<String, String> systemValues(CriticalValue cv, Patient p, List<NurseRecords> records) {
         Map<String, String> m = new LinkedHashMap<>();
         String result = StringUtils.hasText(cv.getValue()) ? cv.getValue() : nvl(cv.getComment());
 
         m.put("checkDate", fmtDate(cv.getPublishTime()));
-        // 姓名：patient.name
         m.put("patientName", p != null ? nvl(p.getName()) : "");
         m.put("deptText", nvl(cv.getDeptName()));
         m.put("bedText", nvl(cv.getBed()));
-        // 住院号：criticalValue.pid 是 hisPid，真正的住院号取 patient.mrn
         m.put("inpatientNo", p != null && StringUtils.hasText(p.getMrn()) ? p.getMrn() : "");
         m.put("lisItem", StringUtils.hasText(cv.getLisItem()) ? cv.getLisItem() : nvl(cv.getBigItemName()));
         m.put("value", result);
-        // 复述结果默认与危急值结果一致
         m.put("repeatResult", result);
-        // 报告人默认“重症系统”
         m.put("reporter", defaultReporter);
-        // 接电话时间 = handleTime
-        m.put("callTime", fmtTime(cv.getHandleTime()));
-        // 接电话姓名 = 匹配到的护理记录 username
-        m.put("callName", matchNurseName(records, cv));
-        m.put("reportDoctor", nvl(cv.getDoctor()));
-        m.put("handled", Boolean.TRUE.equals(cv.getStatus()) ? "\u221a" : "\u00d7");
+
+        // ==== 一次匹配，三处复用 ====
+        NurseRecords nr = matchNurse(records, cv, p);
+
+        // 接电话时间：优先护理记录 time，没匹配到再退回 handleTime
+        Date callAt = (nr != null && nr.getTime() != null) ? nr.getTime() : cv.getHandleTime();
+        m.put("callTime", fmtTime(callAt));
+
+        // 接电话姓名：护理记录 username
+        m.put("callName", nr == null ? "" : nvl(nr.getUsername()));
+
+        // 报告医生：desc 里「报告医生：xxx」优先，取不到退回 criticalValue.doctor
+        String doctor = nr == null ? null : extractDoctor(nr.getDesc());
+        m.put("reportDoctor", StringUtils.hasText(doctor) ? doctor : nvl(cv.getDoctor()));
+
+        m.put("handled", Boolean.TRUE.equals(cv.getStatus()) ? "√" : "×");
         return m;
     }
 
@@ -373,21 +388,26 @@ public class CriticalValueService {
     // ==================================================================
 
     /**
-     * 在该患者的护理记录中，根据 desc 模糊匹配本条危急值，命中后取 username。
+     * 在该患者的护理记录中，根据 desc 模糊匹配本条危急值，返回匹配到的记录对象。
+     * 一条记录同时供 callTime（nr.time）、callName（nr.username）、reportDoctor（nr.desc 提取）三个字段使用。
      *
      * 评分规则：
-     *   desc 包含危急值数值（如 2.161）      +4
-     *   desc 包含项目名（如 肌钙蛋白I、乳酸） +3
-     *   时间差 24 小时内 +2，72 小时内 +1
-     * 得分 >= 3 才视为命中，同分取时间最接近的一条。
+     *   desc 包含危急值数值（容差 &lt;1%）   +4
+     *   desc 包含项目名                    +3
+     *   desc 包含患者姓名（&gt;=2字）         +2
+     *   desc 包含"报告医生"                +1
+     *   时间差 2 小时内 +3，24 小时内 +2，其余 +1
+     *
+     * 时间窗：护理记录必须在危急值发布后 [−1h, +nurseMatchHours h] 内。
+     * 得分 >= 6 才视为命中，宁缺毋滥；同分取时间最接近的一条。
      */
-    private String matchNurseName(List<NurseRecords> records, CriticalValue cv) {
-        if (records == null || records.isEmpty()) {
-            return "";
-        }
+    private NurseRecords matchNurse(List<NurseRecords> records, CriticalValue cv, Patient p) {
+        if (records == null || records.isEmpty()) return null;
+
         List<String> itemNames = extractItemNames(cv);
-        List<String> numbers = extractNumbers(cv);
-        Date ref = cv.getHandleTime() != null ? cv.getHandleTime() : cv.getPublishTime();
+        List<Double> numbers = extractNumberValues(cv);
+        String pname = (p != null) ? nvl(p.getName()) : "";
+        Date ref = cv.getPublishTime() != null ? cv.getPublishTime() : cv.getHandleTime();
 
         NurseRecords best = null;
         int bestScore = 0;
@@ -395,42 +415,65 @@ public class CriticalValueService {
 
         for (NurseRecords r : records) {
             String desc = r.getDesc();
-            if (!StringUtils.hasText(desc)) {
-                continue;
-            }
+            if (!StringUtils.hasText(desc) || r.getTime() == null || ref == null) continue;
+
+            long delta = r.getTime().getTime() - ref.getTime();   // 有方向
+            // 护理记录早于危急值 1 小时以上，或晚于窗口上限，直接排除
+            if (delta < -HOUR || delta > nurseMatchHours * HOUR) continue;
+
             int score = 0;
-            for (String n : numbers) {
-                if (desc.contains(n)) {
-                    score += 4;
-                    break;
-                }
-            }
-            for (String name : itemNames) {
-                if (desc.contains(name)) {
-                    score += 3;
-                    break;
-                }
-            }
-            long diff = Long.MAX_VALUE;
-            if (ref != null && r.getTime() != null) {
-                diff = Math.abs(r.getTime().getTime() - ref.getTime());
-                if (diff <= 24 * HOUR) {
-                    score += 2;
-                } else if (diff <= nurseMatchHours * HOUR) {
-                    score += 1;
-                } else {
-                    continue;   // 时间相差太远，不参与匹配
-                }
-            }
+            if (numbersHit(desc, numbers)) score += 4;
+            for (String n : itemNames) { if (desc.contains(n)) { score += 3; break; } }
+            if (pname.length() >= 2 && desc.contains(pname)) score += 2;
+            if (desc.contains("报告医生")) score += 1;
+
+            long diff = Math.abs(delta);
+            if (diff <= 2 * HOUR) score += 3;
+            else if (diff <= 24 * HOUR) score += 2;
+            else score += 1;
+
+            if (score < 6) continue;   // 阈值提高，宁缺毋滥
             if (score > bestScore || (score == bestScore && diff < bestDiff)) {
-                if (score >= 3) {
-                    best = r;
-                    bestScore = score;
-                    bestDiff = diff;
-                }
+                best = r; bestScore = score; bestDiff = diff;
             }
         }
-        return best == null ? "" : nvl(best.getUsername());
+        return best;
+    }
+
+    /** 从 desc 中提取「报告医生：xxx」 */
+    private static String extractDoctor(String desc) {
+        if (!StringUtils.hasText(desc)) return null;
+        Matcher m = DOCTOR_PATTERN.matcher(desc);
+        return m.find() ? m.group(1).trim() : null;
+    }
+
+    /** 数值容差匹配：相对误差 &lt; 1% 即视为同一个值，兼容护士记录时的四舍五入 */
+    private static boolean numbersHit(String desc, List<Double> numbers) {
+        if (numbers.isEmpty()) return false;
+        Matcher m = NUM_PATTERN.matcher(desc);
+        while (m.find()) {
+            double d;
+            try { d = Double.parseDouble(m.group()); } catch (Exception e) { continue; }
+            for (Double n : numbers) {
+                if (n == 0) continue;
+                if (Math.abs(d - n) / Math.abs(n) < 0.01) return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<Double> extractNumberValues(CriticalValue cv) {
+        List<Double> list = new ArrayList<>();
+        String text = StringUtils.hasText(cv.getValue()) ? cv.getValue() : cv.getComment();
+        if (!StringUtils.hasText(text)) return list;
+        Matcher m = NUM_PATTERN.matcher(text);
+        while (m.find()) {
+            try {
+                double d = Double.parseDouble(m.group());
+                if (!list.contains(d)) list.add(d);
+            } catch (Exception ignore) {}
+        }
+        return list;
     }
 
     /** 从 lisItem / value 中拆出项目名关键词 */
@@ -439,15 +482,15 @@ public class CriticalValueService {
         addItemName(set, cv.getLisItem());
         String text = StringUtils.hasText(cv.getValue()) ? cv.getValue() : cv.getComment();
         if (StringUtils.hasText(text)) {
-            for (String seg : text.split("[,\uff0c;\uff1b]")) {
+            for (String seg : text.split("[,，;；]")) {
                 seg = seg.trim();
                 if (seg.isEmpty()) {
                     continue;
                 }
                 // 取第一个空格或数字之前的部分作为项目名
-                Matcher m = Pattern.compile("^([^\\s\\d]+)").matcher(seg);
+                Matcher m = Pattern.compile("^[^\\s\\d]+").matcher(seg);
                 if (m.find()) {
-                    addItemName(set, m.group(1));
+                    addItemName(set, m.group());
                 }
             }
         }
@@ -463,35 +506,18 @@ public class CriticalValueService {
             set.add(s);
         }
         // 去掉括号内容，如 *纤维蛋白原(FIB) -> 纤维蛋白原
-        String noBracket = s.replaceAll("[\\(\uff08][^\\)\uff09]*[\\)\uff09]", "").trim();
+        String noBracket = s.replaceAll("[\\(（][^\\)）]*[\\)）]", "").trim();
         if (noBracket.length() >= 2) {
             set.add(noBracket);
         }
         // 括号内的缩写也作为关键词，如 APTT、FIB
-        Matcher m = Pattern.compile("[\\(\uff08]([^\\)\uff09]+)[\\)\uff09]").matcher(s);
+        Matcher m = Pattern.compile("[\\(（]([^\\)）]+)[\\)）]").matcher(s);
         while (m.find()) {
             String in = m.group(1).trim();
             if (in.length() >= 2) {
                 set.add(in);
             }
         }
-    }
-
-    /** 从 value 中拆出数值，如 2365.02、19.65 */
-    private static List<String> extractNumbers(CriticalValue cv) {
-        List<String> list = new ArrayList<>();
-        String text = StringUtils.hasText(cv.getValue()) ? cv.getValue() : cv.getComment();
-        if (!StringUtils.hasText(text)) {
-            return list;
-        }
-        Matcher m = NUM_PATTERN.matcher(text);
-        while (m.find()) {
-            String n = m.group();
-            if (n.length() >= 3 && !list.contains(n)) {
-                list.add(n);
-            }
-        }
-        return list;
     }
 
     // ==================================================================
@@ -504,10 +530,14 @@ public class CriticalValueService {
      */
     public void saveCell(SaveCellRequest req) {
         if (!StringUtils.hasText(req.getSourceId())) {
-            throw new IllegalArgumentException("sourceId \u4e0d\u80fd\u4e3a\u7a7a");
+            throw new IllegalArgumentException("sourceId 不能为空");
+        }
+        // 校验 ObjectId 格式，防止非法字符串导致 MongoDB 驱动抛异常
+        if (!ObjectId.isValid(req.getSourceId())) {
+            throw new IllegalArgumentException("sourceId 格式不合法：" + req.getSourceId());
         }
         if (!EDITABLE_FIELDS.contains(req.getField())) {
-            throw new IllegalArgumentException("\u4e0d\u652f\u6301\u7f16\u8f91\u7684\u5b57\u6bb5\uff1a" + req.getField());
+            throw new IllegalArgumentException("不支持编辑的字段：" + req.getField());
         }
 
         CriticalValue cv = mongoTemplate.findById(req.getSourceId(), CriticalValue.class, sourceCollection);
@@ -535,7 +565,7 @@ public class CriticalValueService {
     /** 撤销某个字段的人工修改，恢复为系统值并重新跟随源数据 */
     public void resetCell(String sourceId, String field) {
         if (!StringUtils.hasText(sourceId) || !EDITABLE_FIELDS.contains(field)) {
-            throw new IllegalArgumentException("\u53c2\u6570\u4e0d\u5408\u6cd5");
+            throw new IllegalArgumentException("参数不合法");
         }
         Update update = new Update()
                 .pull("editedFields", field)
@@ -548,7 +578,11 @@ public class CriticalValueService {
     /** 整行保存 */
     public void saveRow(CriticalValueRow row, String account) {
         if (row == null || !StringUtils.hasText(row.getSourceId())) {
-            throw new IllegalArgumentException("sourceId \u4e0d\u80fd\u4e3a\u7a7a");
+            throw new IllegalArgumentException("sourceId 不能为空");
+        }
+        // 校验 ObjectId 格式
+        if (!ObjectId.isValid(row.getSourceId())) {
+            throw new IllegalArgumentException("sourceId 格式不合法：" + row.getSourceId());
         }
         CriticalValue cv = mongoTemplate.findById(row.getSourceId(), CriticalValue.class, sourceCollection);
 
@@ -591,23 +625,35 @@ public class CriticalValueService {
         return s == null ? "" : s;
     }
 
-    private static String fmtDate(Date d) {
-        return d == null ? "" : new SimpleDateFormat("yyyy-MM-dd").format(d);
+    private TimeZone zone() {
+        return StringUtils.hasText(timeZoneId) ? TimeZone.getTimeZone(timeZoneId) : TimeZone.getDefault();
     }
 
-    private static String fmtTime(Date d) {
-        return d == null ? "" : new SimpleDateFormat("MM-dd HH:mm").format(d);
+    private String fmtDate(Date d) {
+        if (d == null) return "";
+        SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
+        f.setTimeZone(zone());
+        return f.format(d);
     }
 
-    private static Date parseDayStart(String day) {
+    private String fmtTime(Date d) {
+        if (d == null) return "";
+        SimpleDateFormat f = new SimpleDateFormat("MM-dd HH:mm");
+        f.setTimeZone(zone());
+        return f.format(d);
+    }
+
+    private Date parseDayStart(String day) {
         if (!StringUtils.hasText(day)) return null;
         LocalDate ld = LocalDate.parse(day.trim());
-        return Date.from(ld.atStartOfDay(ZoneId.systemDefault()).toInstant());
+        ZoneId zid = StringUtils.hasText(timeZoneId) ? ZoneId.of(timeZoneId) : ZoneId.systemDefault();
+        return Date.from(ld.atStartOfDay(zid).toInstant());
     }
 
-    private static Date parseDayEnd(String day) {
+    private Date parseDayEnd(String day) {
         if (!StringUtils.hasText(day)) return null;
         LocalDate ld = LocalDate.parse(day.trim());
-        return Date.from(ld.plusDays(1).atStartOfDay(ZoneId.systemDefault()).minusNanos(1_000_000).toInstant());
+        ZoneId zid = StringUtils.hasText(timeZoneId) ? ZoneId.of(timeZoneId) : ZoneId.systemDefault();
+        return Date.from(ld.plusDays(1).atStartOfDay(zid).minusNanos(1_000_000).toInstant());
     }
 }

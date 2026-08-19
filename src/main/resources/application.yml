@@ -39,6 +39,8 @@ critical-value:
   default-reporter: 重症系统
   # 护理记录匹配允许的时间偏差（小时）
   nurse-match-hours: 72
+  # 时间格式化时区，默认东八区；配成空串则跟随服务器 JVM 时区
+  time-zone: Asia/Shanghai
   # 只展示已处理（status=true）的危急值；true=未处理的不显示
   only-handled: true
   # 科室编码 -> 科室名称，格式 4042:CCU,4041:ICU

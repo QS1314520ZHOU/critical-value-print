@@ -33,17 +33,17 @@
   .patient-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:8px;
     background:var(--blue-soft);color:#1B5FA6;font-size:12px;}
 
-  /* ---------- A4 横向纸张 ---------- */
-  .page{width:297mm;min-height:210mm;margin:24px auto;padding:12mm 10mm;background:var(--canvas);
+  /* ---------- A4 横向分页纸张 ---------- */
+  .sheet{width:297mm;min-height:210mm;margin:24px auto;padding:12mm 10mm;background:var(--canvas);
     border:1px solid var(--border);border-radius:8px;
     box-shadow:0 1px 2px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04);}
-  .page h1{margin:0 0 10mm;text-align:center;font-size:20pt;font-weight:700;letter-spacing:2px;}
+  .sheet h1{margin:0 0 8mm;text-align:center;font-size:20pt;font-weight:700;letter-spacing:2px;}
 
   table{width:100%;border-collapse:collapse;table-layout:fixed;}
   th,td{border:1px solid #333;padding:2px 4px;font-size:10pt;text-align:center;
     vertical-align:middle;word-break:break-all;}
   thead th{height:14mm;background:#fff;font-weight:700;}
-  tbody td{height:11mm;}
+  tbody td{height:11mm;max-height:11mm;overflow:hidden;}
   tbody tr:nth-child(even){background:#FCFCFB;}
   td[contenteditable]{cursor:text;text-align:left;}
   td[contenteditable]:hover{background:var(--blue-soft);}
@@ -52,6 +52,7 @@
   @keyframes flash{0%{background:var(--green-soft);}100%{background:transparent;}}
   td.center{text-align:center;}
   .note{margin-top:6mm;font-size:10pt;}
+  .page-no{margin-top:4mm;text-align:right;font-size:9pt;color:var(--muted);}
   .empty{padding:24px;text-align:center;color:var(--muted);}
 
   /* 列宽（合计 100%） */
@@ -69,10 +70,12 @@
   @media print{
     html,body{background:#fff;}
     .toolbar{display:none !important;}
-    .page{width:auto;min-height:auto;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;}
-    .page h1{margin-bottom:6mm;font-size:18pt;}
+    .sheet{width:auto;min-height:0;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;
+      break-after:page;page-break-after:always;}
+    .sheet:last-child{break-after:auto;page-break-after:auto;}
+    .sheet h1{margin-bottom:6mm;font-size:18pt;}
     thead{display:table-header-group;}
-    tr{page-break-inside:avoid;}
+    tr{break-inside:avoid;page-break-inside:avoid;}
     td[contenteditable]:hover,td[contenteditable]:focus{background:transparent;outline:none;}
     tbody tr:nth-child(even){background:transparent;}
   }
@@ -98,26 +101,7 @@
   <button class="btn primary" id="btnPrint">打印</button>
 </div>
 
-<div class="page">
-  <h1>眉山市人民医院危急值报告记录登记</h1>
-  <table id="grid">
-    <colgroup>
-      <col class="c-date"><col class="c-name"><col class="c-dept"><col class="c-bed">
-      <col class="c-no"><col class="c-item"><col class="c-value"><col class="c-repeat">
-      <col class="c-reporter"><col class="c-calltime"><col class="c-callname">
-      <col class="c-doctor"><col class="c-handled">
-    </colgroup>
-    <thead>
-      <tr>
-        <th>检查<br>日期</th><th>姓名</th><th>科室</th><th>床号</th><th>住院号</th>
-        <th>危急值项目</th><th>危急值结果</th><th>复述结果</th><th>报告人</th>
-        <th>接电话<br>时&nbsp;&nbsp;间</th><th>接电话<br>姓&nbsp;&nbsp;名</th><th>报告<br>医生</th><th>是否<br>处置</th>
-      </tr>
-    </thead>
-    <tbody id="tbody"></tbody>
-  </table>
-  <div class="note">注：报告医生处置√；未处置×</div>
-</div>
+<div id="sheets"></div>
 
 <script>
 /* =======================================================================
@@ -130,7 +114,9 @@ var API_BASE = '';               // 与后端同源部署时留空
 
 // pid 对应 criticalValue.pid（即 patient.hisPid）；mrn 才是表格里的住院号
 var ctx = { account: '', token: '', patient: {}, pid: '', mrn: '', bed: '', dept: '', deptCode: '', name: '' };
+var ROWS_PER_PAGE = 13;          // A4 横向、11mm 行高实测值，字号或行高改了要同步调
 var MIN_ROWS = 11;               // 空表也铺满纸张
+var TITLE = '眉山市人民医院危急值报告记录登记';
 var FIELDS = ['checkDate','patientName','deptText','bedText','inpatientNo','lisItem','value',
               'repeatResult','reporter','callTime','callName','reportDoctor','handled'];
 
@@ -154,7 +140,7 @@ window.addEventListener('message', function(e){
   ctx.dept = p.dept || '';
   ctx.deptCode = p.deptCode || p.deptCode2 || '';   // 科室编码，后端据此换算科室名
   renderPatientChip();
-  // 默认展示本科室全部数据：只有科室变了、或勾选了“仅当前患者”时才重查
+  // 默认展示本科室全部数据：只有科室变了、或勾选了"仅当前患者"时才重查
   var deptKey = ctx.deptCode || ctx.dept;
   if (document.getElementById('byPatient').checked || prevDeptKey !== deptKey) {
     prevDeptKey = deptKey;
@@ -186,7 +172,7 @@ function setStatus(text, type){
 var reqSeq = 0;   // 请求序号，避免旧请求的响应覆盖新结果
 
 function loadData(){
-  // 默认按科室查询；勾选“仅当前患者”后才按患者过滤
+  // 默认按科室查询；勾选"仅当前患者"后才按患者过滤
   var byPatient = document.getElementById('byPatient').checked;
   if (!ctx.dept && !ctx.deptCode && !ctx.pid) {
     renderRows([]);
@@ -195,7 +181,7 @@ function loadData(){
   }
 
   var qs = [];
-  // 只有勾选“仅当前患者”时才按患者/床号过滤，否则按整个科室查
+  // 只有勾选"仅当前患者"时才按患者/床号过滤，否则按整个科室查
   if (byPatient && ctx.pid) qs.push('pid=' + encodeURIComponent(ctx.pid));
   if (byPatient && ctx.bed) qs.push('bed=' + encodeURIComponent(ctx.bed));
   if (ctx.dept) qs.push('deptName=' + encodeURIComponent(ctx.dept));
@@ -219,18 +205,55 @@ function loadData(){
     .catch(function(err){ if (seq === reqSeq) setStatus('查询失败：' + err.message, 'err'); });
 }
 
+/* =======================================================================
+   3. 分页渲染：每页 ROWS_PER_PAGE 行，每页自带标题/表头/注/页码
+   ======================================================================= */
 function renderRows(rows){
-  var tbody = document.getElementById('tbody');
-  tbody.innerHTML = '';
-  rows.forEach(function(row){
-    // 后端已从 patient 表取姓名/住院号；这里仅在缺失时用当前患者信息兼容
-    if (document.getElementById('byPatient').checked) {
+  var host = document.getElementById('sheets');
+  host.innerHTML = '';
+
+  // 不足一页时补空白行铺满
+  var data = rows.slice();
+  var padTo = Math.max(data.length, MIN_ROWS);
+  padTo = Math.ceil(padTo / ROWS_PER_PAGE) * ROWS_PER_PAGE;
+  while (data.length < padTo) data.push(null);
+
+  var pageCount = Math.max(1, Math.ceil(data.length / ROWS_PER_PAGE));
+  for (var i = 0; i < pageCount; i++){
+    host.appendChild(buildSheet(data.slice(i * ROWS_PER_PAGE, (i + 1) * ROWS_PER_PAGE), i + 1, pageCount));
+  }
+}
+
+function buildSheet(pageRows, pageNo, pageCount){
+  var sheet = document.createElement('div');
+  sheet.className = 'sheet';
+  sheet.innerHTML =
+    '<h1>' + TITLE + '</h1>' +
+    '<table>' +
+      '<colgroup>' +
+        '<col class="c-date"><col class="c-name"><col class="c-dept"><col class="c-bed">' +
+        '<col class="c-no"><col class="c-item"><col class="c-value"><col class="c-repeat">' +
+        '<col class="c-reporter"><col class="c-calltime"><col class="c-callname">' +
+        '<col class="c-doctor"><col class="c-handled">' +
+      '</colgroup>' +
+      '<thead><tr>' +
+        '<th>检查<br>日期</th><th>姓名</th><th>科室</th><th>床号</th><th>住院号</th>' +
+        '<th>危急值项目</th><th>危急值结果</th><th>复述结果</th><th>报告人</th>' +
+        '<th>接电话<br>时&nbsp;&nbsp;间</th><th>接电话<br>姓&nbsp;&nbsp;名</th>' +
+        '<th>报告<br>医生</th><th>是否<br>处置</th>' +
+      '</tr></thead><tbody></tbody></table>' +
+    '<div class="note">注：报告医生处置√；未处置×</div>' +
+    '<div class="page-no">第 ' + pageNo + ' 页 / 共 ' + pageCount + ' 页</div>';
+
+  var tb = sheet.querySelector('tbody');
+  pageRows.forEach(function(row){
+    if (row && document.getElementById('byPatient').checked){
       if (!row.patientName && ctx.name) row.patientName = ctx.name;
       if (!row.inpatientNo && ctx.mrn) row.inpatientNo = ctx.mrn;
     }
-    tbody.appendChild(buildRow(row));
+    tb.appendChild(buildRow(row));
   });
-  for (var i = rows.length; i < MIN_ROWS; i++) tbody.appendChild(buildRow(null));
+  return sheet;
 }
 
 function buildRow(row){
@@ -253,7 +276,7 @@ function buildRow(row){
 }
 
 /* =======================================================================
-   3. 编辑后自动保存：POST /api/critical-value/cell
+   4. 编辑后自动保存：POST /api/critical-value/cell
       写入 MongoDB SmartCare.criticalValueReport（集合不存在时自动创建）
    ======================================================================= */
 function onCellBlur(ev){
@@ -285,16 +308,46 @@ function onCellBlur(ev){
 }
 
 /* =======================================================================
-   4. 工具栏事件
+   5. 工具栏事件
    ======================================================================= */
 document.getElementById('btnQuery').addEventListener('click', loadData);
 document.getElementById('btnPrint').addEventListener('click', function(){
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   setTimeout(function(){ window.print(); }, 120);
 });
+
+// 新增空白行：往最后一个 sheet 的 tbody 追加，满了就新建一页
 document.getElementById('btnAddRow').addEventListener('click', function(){
-  document.getElementById('tbody').appendChild(buildRow(null));
+  var sheets = document.querySelectorAll('.sheet');
+  var last = sheets[sheets.length - 1];
+  var tb = last && last.querySelector('tbody');
+  if (!tb || tb.children.length >= ROWS_PER_PAGE){
+    // 最后一页已满：收集当前全部行，追加一个空行，重新分页渲染
+    var all = collectAllRows();
+    all.push({});
+    renderRows(all);
+    return;
+  }
+  tb.appendChild(buildRow(null));
 });
+
+/** 收集当前所有 sheet 中的数据行（用于重新分页） */
+function collectAllRows(){
+  var rows = [];
+  var sheets = document.querySelectorAll('.sheet');
+  sheets.forEach(function(sheet){
+    var trs = sheet.querySelectorAll('tbody tr');
+    trs.forEach(function(tr){
+      var row = {};
+      row.sourceId = tr.dataset.sourceId || '';
+      tr.querySelectorAll('td[data-field]').forEach(function(td){
+        row[td.dataset.field] = td.textContent.trim();
+      });
+      rows.push(row);
+    });
+  });
+  return rows;
+}
 
 (function init(){
   var today = new Date();

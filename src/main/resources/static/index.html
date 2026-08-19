@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>眉山市人民医院危急值报告记录登记</title>
+<style>
+  :root{
+    --text:#2C2C2B; --muted:#7D7A75; --canvas:#FFFFFF; --soft:#F9F8F7;
+    --surface:#F0EFED; --border:#E6E5E3; --blue:#2783DE; --blue-soft:#E5F2FC;
+    --green:#46A171; --green-soft:#E8F1EC; --red:#E56458; --red-soft:#FCE9E7;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--soft);color:var(--text);
+    font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+    font-size:14px;line-height:1.5;}
+
+  /* ---------- 工具栏（不打印） ---------- */
+  .toolbar{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;align-items:center;gap:12px;
+    padding:12px 24px;background:var(--canvas);border-bottom:1px solid var(--border);}
+  .toolbar .group{display:flex;align-items:center;gap:8px;}
+  .toolbar label{color:var(--muted);font-size:13px;}
+  .toolbar input[type="date"],.toolbar input[type="text"]{height:32px;padding:0 8px;border:1px solid var(--border);
+    border-radius:8px;background:var(--canvas);color:var(--text);font-size:13px;}
+  .btn{height:32px;min-width:72px;padding:0 14px;border:1px solid var(--border);border-radius:8px;
+    background:var(--canvas);color:var(--text);font-size:13px;cursor:pointer;}
+  .btn:hover{background:var(--surface);}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .btn.primary:hover{filter:brightness(.95);}
+  .spacer{flex:1;}
+  .status{font-size:12px;color:var(--muted);min-width:120px;}
+  .status.ok{color:var(--green);} .status.err{color:var(--red);}
+  .patient-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:8px;
+    background:var(--blue-soft);color:#1B5FA6;font-size:12px;}
+
+  /* ---------- A4 横向纸张 ---------- */
+  .page{width:297mm;min-height:210mm;margin:24px auto;padding:12mm 10mm;background:var(--canvas);
+    border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 1px 2px rgba(0,0,0,.05),0 4px 12px rgba(0,0,0,.04);}
+  .page h1{margin:0 0 10mm;text-align:center;font-size:20pt;font-weight:700;letter-spacing:2px;}
+
+  table{width:100%;border-collapse:collapse;table-layout:fixed;}
+  th,td{border:1px solid #333;padding:2px 4px;font-size:10pt;text-align:center;
+    vertical-align:middle;word-break:break-all;}
+  thead th{height:14mm;background:#fff;font-weight:700;}
+  tbody td{height:11mm;}
+  tbody tr:nth-child(even){background:#FCFCFB;}
+  td[contenteditable]{cursor:text;text-align:left;}
+  td[contenteditable]:hover{background:var(--blue-soft);}
+  td[contenteditable]:focus{outline:2px solid var(--blue);outline-offset:-2px;background:#fff;}
+  td.saved{animation:flash 1s ease;}
+  @keyframes flash{0%{background:var(--green-soft);}100%{background:transparent;}}
+  td.center{text-align:center;}
+  .note{margin-top:6mm;font-size:10pt;}
+  .empty{padding:24px;text-align:center;color:var(--muted);}
+
+  /* 列宽（合计 100%） */
+  col.c-date{width:8%;}  col.c-name{width:6%;}   col.c-dept{width:5%;}
+  col.c-bed{width:4%;}   col.c-no{width:7%;}     col.c-item{width:10%;}
+  col.c-value{width:14%;}col.c-repeat{width:12%;}col.c-reporter{width:6%;}
+  col.c-calltime{width:8%;}col.c-callname{width:6%;}col.c-doctor{width:6%;}
+  col.c-handled{width:4%;}
+
+  /* 日期/时间列不断行 */
+  td.nowrap{white-space:nowrap;word-break:keep-all;font-size:9pt;}
+
+  /* ---------- 打印：A4 横向 ---------- */
+  @page{size:A4 landscape;margin:8mm;}
+  @media print{
+    html,body{background:#fff;}
+    .toolbar{display:none !important;}
+    .page{width:auto;min-height:auto;margin:0;padding:0;border:0;border-radius:0;box-shadow:none;}
+    .page h1{margin-bottom:6mm;font-size:18pt;}
+    thead{display:table-header-group;}
+    tr{page-break-inside:avoid;}
+    td[contenteditable]:hover,td[contenteditable]:focus{background:transparent;outline:none;}
+    tbody tr:nth-child(even){background:transparent;}
+  }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <span class="patient-chip" id="patientChip">等待宿主系统下发患者信息…</span>
+  <div class="group">
+    <label for="startDate">开始</label>
+    <input type="date" id="startDate">
+    <label for="endDate">结束</label>
+    <input type="date" id="endDate">
+  </div>
+  <div class="group">
+    <label><input type="checkbox" id="byPatient"> 仅当前患者</label>
+  </div>
+  <button class="btn" id="btnQuery">查询</button>
+  <button class="btn" id="btnAddRow">新增空白行</button>
+  <div class="spacer"></div>
+  <span class="status" id="status">就绪</span>
+  <button class="btn primary" id="btnPrint">打印</button>
+</div>
+
+<div class="page">
+  <h1>眉山市人民医院危急值报告记录登记</h1>
+  <table id="grid">
+    <colgroup>
+      <col class="c-date"><col class="c-name"><col class="c-dept"><col class="c-bed">
+      <col class="c-no"><col class="c-item"><col class="c-value"><col class="c-repeat">
+      <col class="c-reporter"><col class="c-calltime"><col class="c-callname">
+      <col class="c-doctor"><col class="c-handled">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>检查<br>日期</th><th>姓名</th><th>科室</th><th>床号</th><th>住院号</th>
+        <th>危急值项目</th><th>危急值结果</th><th>复述结果</th><th>报告人</th>
+        <th>接电话<br>时&nbsp;&nbsp;间</th><th>接电话<br>姓&nbsp;&nbsp;名</th><th>报告<br>医生</th><th>是否<br>处置</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="note">注：报告医生处置√；未处置×</div>
+</div>
+
+<script>
+/* =======================================================================
+   1. postMessage 握手（对接文档 V2）
+   iframe -> 宿主: { type: 'SmartCareReady' }
+   宿主 -> iframe: { type: 'SmartCare', account, patient, token }
+   ======================================================================= */
+var HOST_ORIGIN = '*';           // 正式部署请改成宿主系统来源，例如 'http://192.168.5.154:8080'
+var API_BASE = '';               // 与后端同源部署时留空
+
+// pid 对应 criticalValue.pid（即 patient.hisPid）；mrn 才是表格里的住院号
+var ctx = { account: '', token: '', patient: {}, pid: '', mrn: '', bed: '', dept: '', deptCode: '', name: '' };
+var MIN_ROWS = 11;               // 空表也铺满纸张
+var FIELDS = ['checkDate','patientName','deptText','bedText','inpatientNo','lisItem','value',
+              'repeatResult','reporter','callTime','callName','reportDoctor','handled'];
+
+function notifyReady(){
+  try{ window.parent && window.parent.postMessage({ type:'SmartCareReady' }, HOST_ORIGIN); }catch(e){}
+}
+
+window.addEventListener('message', function(e){
+  // 正式环境建议开启来源校验：if (e.origin !== 'http://宿主系统地址') return;
+  if (!e.data || e.data.type !== 'SmartCare') return;
+  var p = e.data.patient || {};
+  ctx.account = typeof e.data.account === 'string'
+      ? e.data.account
+      : (e.data.account && (e.data.account.userName || e.data.account.name)) || '';
+  ctx.token = e.data.token || '';
+  ctx.patient = p;
+  ctx.name = p.name || '';
+  ctx.pid  = p.hisPid || p.patientId || p.mrn || '';   // criticalValue.pid = patient.hisPid
+  ctx.mrn  = p.mrn || '';                              // 住院号
+  ctx.bed  = p.showBed || p.hisBed || '';
+  ctx.dept = p.dept || '';
+  ctx.deptCode = p.deptCode || p.deptCode2 || '';   // 科室编码，后端据此换算科室名
+  renderPatientChip();
+  // 默认展示本科室全部数据：只有科室变了、或勾选了“仅当前患者”时才重查
+  var deptKey = ctx.deptCode || ctx.dept;
+  if (document.getElementById('byPatient').checked || prevDeptKey !== deptKey) {
+    prevDeptKey = deptKey;
+    loadData();
+  }
+});
+
+var prevDeptKey = null;   // 上一次查询的科室，用于判断切换患者后是否需要重查
+
+function renderPatientChip(){
+  var g = ctx.patient.genderStr ||
+          (/^(Female|F|2)$/i.test(ctx.patient.gender||'') ? '女' :
+           /^(Male|M|1)$/i.test(ctx.patient.gender||'') ? '男' : '');
+  document.getElementById('patientChip').textContent =
+      ctx.pid ? ('当前科室：' + (ctx.dept||'-') + '  |  当前患者：' + (ctx.name||'-') + (g?(' '+g):'') +
+                 ' | 床号 ' + (ctx.bed||'-') + ' | 住院号 ' + (ctx.mrn||'-'))
+              : '未收到科室信息（可手动查询）';
+}
+
+/* =======================================================================
+   2. 数据加载：GET /api/critical-value/list
+   ======================================================================= */
+function setStatus(text, type){
+  var el = document.getElementById('status');
+  el.textContent = text;
+  el.className = 'status' + (type ? ' ' + type : '');
+}
+
+var reqSeq = 0;   // 请求序号，避免旧请求的响应覆盖新结果
+
+function loadData(){
+  // 默认按科室查询；勾选“仅当前患者”后才按患者过滤
+  var byPatient = document.getElementById('byPatient').checked;
+  if (!ctx.dept && !ctx.deptCode && !ctx.pid) {
+    renderRows([]);
+    setStatus('等待宿主下发科室信息…');
+    return;
+  }
+
+  var qs = [];
+  // 只有勾选“仅当前患者”时才按患者/床号过滤，否则按整个科室查
+  if (byPatient && ctx.pid) qs.push('pid=' + encodeURIComponent(ctx.pid));
+  if (byPatient && ctx.bed) qs.push('bed=' + encodeURIComponent(ctx.bed));
+  if (ctx.dept) qs.push('deptName=' + encodeURIComponent(ctx.dept));
+  if (ctx.deptCode) qs.push('deptCode=' + encodeURIComponent(ctx.deptCode));
+  var s = document.getElementById('startDate').value;
+  var e2 = document.getElementById('endDate').value;
+  if (s) qs.push('startDate=' + s);
+  if (e2) qs.push('endDate=' + e2);
+  qs.push('byPatient=' + (byPatient ? 'true' : 'false'));
+
+  var seq = ++reqSeq;
+  setStatus('查询中…');
+  fetch(API_BASE + '/api/critical-value/list?' + qs.join('&'), { headers: ctx.token ? { 'Authorization': ctx.token } : {} })
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if (seq !== reqSeq) return;   // 已有更新的请求，丢弃本次响应
+      if (res.code !== 0) { setStatus(res.msg || '查询失败', 'err'); return; }
+      renderRows(res.data || []);
+      setStatus('共 ' + (res.data ? res.data.length : 0) + ' 条', 'ok');
+    })
+    .catch(function(err){ if (seq === reqSeq) setStatus('查询失败：' + err.message, 'err'); });
+}
+
+function renderRows(rows){
+  var tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(row){
+    // 后端已从 patient 表取姓名/住院号；这里仅在缺失时用当前患者信息兼容
+    if (document.getElementById('byPatient').checked) {
+      if (!row.patientName && ctx.name) row.patientName = ctx.name;
+      if (!row.inpatientNo && ctx.mrn) row.inpatientNo = ctx.mrn;
+    }
+    tbody.appendChild(buildRow(row));
+  });
+  for (var i = rows.length; i < MIN_ROWS; i++) tbody.appendChild(buildRow(null));
+}
+
+function buildRow(row){
+  var tr = document.createElement('tr');
+  tr.dataset.sourceId = row ? (row.sourceId || '') : '';
+  FIELDS.forEach(function(f){
+    var td = document.createElement('td');
+    td.contentEditable = 'true';
+    td.dataset.field = f;
+    td.textContent = row ? (row[f] || '') : '';
+    if (f === 'handled' || f === 'bedText') td.className = 'center';
+    if (f === 'checkDate' || f === 'callTime') td.className = 'center nowrap';
+    td.addEventListener('blur', onCellBlur);
+    td.addEventListener('keydown', function(ev){
+      if (ev.key === 'Enter') { ev.preventDefault(); td.blur(); }
+    });
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
+/* =======================================================================
+   3. 编辑后自动保存：POST /api/critical-value/cell
+      写入 MongoDB SmartCare.criticalValueReport（集合不存在时自动创建）
+   ======================================================================= */
+function onCellBlur(ev){
+  var td = ev.target;
+  var tr = td.parentNode;
+  var sourceId = tr.dataset.sourceId;
+  var value = td.textContent.trim();
+  if (td.dataset.last === value) return;   // 无变化不提交
+  td.dataset.last = value;
+
+  if (!sourceId) {   // 手工新增的空白行没有源记录，仅本地保留，不写库
+    setStatus('空白行仅用于手写打印，未入库');
+    return;
+  }
+
+  setStatus('保存中…');
+  fetch(API_BASE + '/api/critical-value/cell', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, ctx.token ? { 'Authorization': ctx.token } : {}),
+    body: JSON.stringify({ sourceId: sourceId, field: td.dataset.field, value: value, account: ctx.account })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(res){
+    if (res.code !== 0) { setStatus(res.msg || '保存失败', 'err'); return; }
+    td.classList.remove('saved'); void td.offsetWidth; td.classList.add('saved');
+    setStatus('已自动保存 ' + new Date().toLocaleTimeString('zh-CN'), 'ok');
+  })
+  .catch(function(err){ setStatus('保存失败：' + err.message, 'err'); });
+}
+
+/* =======================================================================
+   4. 工具栏事件
+   ======================================================================= */
+document.getElementById('btnQuery').addEventListener('click', loadData);
+document.getElementById('btnPrint').addEventListener('click', function(){
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  setTimeout(function(){ window.print(); }, 120);
+});
+document.getElementById('btnAddRow').addEventListener('click', function(){
+  document.getElementById('tbody').appendChild(buildRow(null));
+});
+
+(function init(){
+  var today = new Date();
+  var d = new Date(today.getTime() - 6 * 86400000);
+  document.getElementById('startDate').value = d.toISOString().slice(0, 10);
+  document.getElementById('endDate').value = today.toISOString().slice(0, 10);
+  renderRows([]);
+  notifyReady();
+  loadData();
+})();
+</script>
+</body>
+</html>

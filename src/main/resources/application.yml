@@ -1,0 +1,52 @@
+server:
+  port: 18088
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: critical-value-print
+  data:
+    mongodb:
+      # 方式一（推荐）：直接使用连接串
+      # 无认证： mongodb://192.168.5.154:27017/SmartCare
+      # 有认证： mongodb://用户名:密码@192.168.5.154:27017/SmartCare?authSource=admin
+      # 副本集： mongodb://ip1:27017,ip2:27017/SmartCare?replicaSet=rs0&authSource=admin
+      uri: mongodb://192.168.5.154:27017/SmartCare
+      # 方式二：分项配置（与 uri 二选一，使用时请注释掉上面的 uri）
+      # host: 192.168.5.154
+      # port: 27017
+      # database: SmartCare
+      # username: smartcare
+      # password: 123456
+      # authentication-database: admin
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+# 业务配置
+critical-value:
+  # 源数据集合（只读）
+  source-collection: criticalValue
+  # 登记表编辑结果集合（不存在会自动创建）
+  report-collection: criticalValueReport
+  # 患者集合（取住院号 mrn、姓名）
+  patient-collection: patient
+  # 护理记录集合（取接电话姓名 username）
+  nurse-records-collection: nurseRecords
+  # 报告人默认值
+  default-reporter: 重症系统
+  # 护理记录匹配允许的时间偏差（小时）
+  nurse-match-hours: 72
+  # 只展示已处理（status=true）的危急值；true=未处理的不显示
+  only-handled: true
+  # 科室编码 -> 科室名称，格式 4042:CCU,4041:ICU
+  # 不配则自动从 patient 表的 deptCode / deptCode2 反查 dept，一般不用配
+  dept-code-map: ""
+  # 允许 iframe 嵌入的宿主来源，多个用逗号分隔，* 表示不限制（仅联调用）
+  allowed-origins: "*"
+
+logging:
+  level:
+    org.springframework.data.mongodb.core.MongoTemplate: info
